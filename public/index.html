@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>efans.gay</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Tangerine:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: "Tangerine", cursive;
+        font-size: 10vw;
+        height: 100vh;
+        display: flex;
+        max-width: 950px;
+        margin: auto;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        color: white;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        transition: background-color 0.016s linear;
+      }
+      .text {
+        max-width: 100%;
+        word-wrap: break-word;
+      }
+      /* For mobile devices */
+      @media screen and (max-width: 768px) {
+        body {
+          font-size: 15vw;
+          padding: 10px;
+        }
+      }
+      /* For very small screens */
+      @media screen and (max-width: 320px) {
+        body {
+          font-size: 18vw;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="text">{{.MOTD}}</div>
+    <script>
+      let hue = 0;
+      const body = document.body;
+
+      function updateColor() {
+        body.style.backgroundColor = `hsl(${hue}, 100%, 50%)`;
+        hue = (hue + 1) % 360; // Increment hue and wrap around at 360
+        requestAnimationFrame(updateColor);
+      }
+
+      // Start the animation
+      requestAnimationFrame(updateColor);
+    </script>
+  </body>
+</html>

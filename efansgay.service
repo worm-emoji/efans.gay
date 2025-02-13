@@ -1,0 +1,14 @@
+[Unit]
+Description=efans.gay web service
+After=network.target
+
+[Service]
+Type=simple
+User=worm
+WorkingDirectory=/home/worm/efansgay
+ExecStart=/home/worm/efansgay/efansgay
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target 
