@@ -14,7 +14,6 @@
         margin: 0;
         padding: 20px;
         font-family: "Tangerine", cursive;
-        font-size: 10vw;
         height: 100vh;
         display: flex;
         max-width: 950px;
@@ -30,19 +29,6 @@
         max-width: 100%;
         word-wrap: break-word;
       }
-      /* For mobile devices */
-      @media screen and (max-width: 768px) {
-        body {
-          font-size: 15vw;
-          padding: 10px;
-        }
-      }
-      /* For very small screens */
-      @media screen and (max-width: 320px) {
-        body {
-          font-size: 18vw;
-        }
-      }
     </style>
   </head>
   <body>
@@ -50,14 +36,36 @@
     <script>
       let hue = 0;
       const body = document.body;
+      const text = document.querySelector(".text");
 
       function updateColor() {
         body.style.backgroundColor = `hsl(${hue}, 100%, 50%)`;
-        hue = (hue + 1) % 360; // Increment hue and wrap around at 360
+        hue = (hue + 1) % 360;
         requestAnimationFrame(updateColor);
       }
 
-      // Start the animation
+      function fitText() {
+        let fontSize = 1;
+        text.style.fontSize = fontSize + "px";
+
+        // Increase font size until it's too big
+        while (
+          text.offsetWidth < window.innerWidth * 0.9 &&
+          text.offsetHeight < window.innerHeight * 0.9
+        ) {
+          fontSize++;
+          text.style.fontSize = fontSize + "px";
+        }
+
+        // Step back one size to ensure it fits
+        text.style.fontSize = fontSize - 1 + "px";
+      }
+
+      // Fit text initially and on window resize
+      fitText();
+      window.addEventListener("resize", fitText);
+
+      // Start the color animation
       requestAnimationFrame(updateColor);
     </script>
   </body>
