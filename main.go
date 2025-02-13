@@ -56,6 +56,7 @@ type Interaction struct {
 	Data          InteractionData `json:"data"`
 	Token         string          `json:"token"`
 	ApplicationID string          `json:"application_id"`
+	GuildID       string          `json:"guild_id"`
 }
 
 type InteractionData struct {
@@ -113,8 +114,9 @@ func registerDiscordCommands() error {
 		return fmt.Errorf("error marshaling command: %v", err)
 	}
 
-	url := fmt.Sprintf("https://discord.com/api/v8/applications/%s/commands", 
-		os.Getenv("DISCORD_APPLICATION_ID"))
+	url := fmt.Sprintf("https://discord.com/api/v8/applications/%s/guilds/%s/commands",
+		os.Getenv("DISCORD_APPLICATION_ID"),
+		os.Getenv("DISCORD_GUILD_ID"))
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -220,6 +222,13 @@ func main() {
 		if err := json.NewDecoder(r.Body).Decode(&interaction); err != nil {
 			log.Printf("Error decoding interaction: %v", err)
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Verify guild ID
+		if interaction.GuildID != os.Getenv("DISCORD_GUILD_ID") {
+			log.Printf("Unauthorized guild ID: %s", interaction.GuildID)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
