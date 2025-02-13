@@ -24,10 +24,21 @@
         color: white;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
         transition: background-color 0.016s linear;
+        box-sizing: border-box;
       }
       .text {
         max-width: 100%;
         word-wrap: break-word;
+        white-space: pre-wrap;
+        line-height: 0.8;
+      }
+      @media screen and (max-width: 768px) {
+        body {
+          padding: 10px;
+        }
+        .text {
+          line-height: 1.1;
+        }
       }
     </style>
   </head>
@@ -48,10 +59,25 @@
         let fontSize = 1;
         text.style.fontSize = fontSize + "px";
 
+        // Add line breaks for narrow screens
+        if (window.innerWidth < 768) {
+          const words = text.textContent.split(" ");
+          if (words.length > 2) {
+            const midPoint = Math.ceil(words.length / 2);
+            text.textContent =
+              words.slice(0, midPoint).join(" ") +
+              "\n" +
+              words.slice(midPoint).join(" ");
+          }
+        } else {
+          // Remove line breaks for wider screens
+          text.textContent = text.textContent.replace(/\n/g, " ");
+        }
+
         // Increase font size until it's too big
         while (
-          text.offsetWidth < window.innerWidth * 0.9 &&
-          text.offsetHeight < window.innerHeight * 0.9
+          text.offsetWidth < window.innerWidth * 0.85 &&
+          text.offsetHeight < window.innerHeight * 0.85
         ) {
           fontSize++;
           text.style.fontSize = fontSize + "px";
