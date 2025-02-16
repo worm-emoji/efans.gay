@@ -35,9 +35,13 @@
       @media screen and (max-width: 768px) {
         body {
           padding: 10px;
+          height: auto;
+          min-height: 100vh;
+          overflow-y: auto;
         }
         .text {
           line-height: 1.1;
+          font-size: 72px !important;
         }
       }
     </style>
@@ -56,6 +60,11 @@
       }
 
       function fitText() {
+        // Skip text fitting on mobile
+        if (window.innerWidth < 768) {
+          return;
+        }
+
         let fontSize = 1;
         text.style.fontSize = fontSize + "px";
 
