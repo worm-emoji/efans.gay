@@ -13,18 +13,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type PageData struct {
-	MOTD string
+	MOTD        string
+	LastUpdated int64
 }
 
 // MOTDStore handles thread-safe access to the MOTD
 type MOTDStore struct {
 	sync.RWMutex
-	message string
+	message     string
+	lastUpdated int64
 }
 
 func (s *MOTDStore) Get() string {
@@ -33,10 +36,17 @@ func (s *MOTDStore) Get() string {
 	return s.message
 }
 
+func (s *MOTDStore) GetLastUpdated() int64 {
+	s.RLock()
+	defer s.RUnlock()
+	return s.lastUpdated
+}
+
 func (s *MOTDStore) Set(message string) error {
 	s.Lock()
 	defer s.Unlock()
 	s.message = message
+	s.lastUpdated = time.Now().Unix()
 	
 	// Ensure data directory exists
 	if err := os.MkdirAll("data", 0755); err != nil {
@@ -194,7 +204,10 @@ func main() {
 	}
 
 	// Initialize MOTD store with persisted or default message
-	motdStore := &MOTDStore{message: "does citadel usually make money off these things?"}
+	motdStore := &MOTDStore{
+		message:     "does citadel usually make money off these things?",
+		lastUpdated: time.Now().Unix(),
+	}
 	
 	// Try to load saved MOTD
 	if data, err := os.ReadFile("data/efans.txt"); err == nil {
@@ -282,6 +295,7 @@ func main() {
 
 			data := PageData{
 				MOTD: motdStore.Get(),
+				LastUpdated: motdStore.GetLastUpdated(),
 			}
 
 			err = tmpl.Execute(w, data)
@@ -294,6 +308,11 @@ func main() {
 		}
 
 		fs.ServeHTTP(w, r)
+	})
+
+	http.HandleFunc("/last-updated", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "%d", motdStore.GetLastUpdated())
 	})
 
 	log.Println("Server starting on http://localhost:4331")

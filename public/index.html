@@ -52,6 +52,26 @@
       let hue = 0;
       const body = document.body;
       const text = document.querySelector(".text");
+      let lastUpdateTimestamp = {{.LastUpdated}};
+
+      // Add function to poll for updates
+      async function checkForUpdates() {
+        try {
+          const response = await fetch("/last-updated");
+          if (!response.ok) return;
+
+          const timestamp = Number(await response.text());
+
+          if (timestamp !== lastUpdateTimestamp) {
+            window.location.reload();
+          }
+        } catch (error) {
+          // Silently handle any errors
+        }
+      }
+
+      // Start polling every second
+      setInterval(checkForUpdates, 1000);
 
       // Add function to replace Discord emoji
       function replaceDiscordEmoji() {
