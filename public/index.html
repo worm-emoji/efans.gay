@@ -53,6 +53,20 @@
       const body = document.body;
       const text = document.querySelector(".text");
 
+      // Add function to replace Discord emoji
+      function replaceDiscordEmoji() {
+        const emojiPattern = /<a?:([^:]+):(\d+)>/g;
+        text.innerHTML = text.textContent.replace(
+          emojiPattern,
+          (match, name, id) => {
+            // Check if it's an animated emoji (starts with <a:)
+            const isAnimated = match.startsWith("<a:");
+            const extension = isAnimated ? "gif" : "png";
+            return `<img src="https://cdn.discordapp.com/emojis/${id}.${extension}" alt="${name}" style="height: 1em; vertical-align: middle;">`;
+          }
+        );
+      }
+
       function updateColor() {
         body.style.backgroundColor = `hsl(${hue}, 100%, 50%)`;
         hue = (hue + 1) % 360;
@@ -67,6 +81,9 @@
 
         let fontSize = 1;
         text.style.fontSize = fontSize + "px";
+
+        // Store the HTML content with emojis
+        const originalHTML = text.innerHTML;
 
         // Add line breaks for narrow screens
         if (window.innerWidth < 768) {
@@ -83,6 +100,9 @@
           text.textContent = text.textContent.replace(/\n/g, " ");
         }
 
+        // Restore emoji images
+        text.innerHTML = originalHTML;
+
         // Increase font size until it's too big
         while (
           text.offsetWidth < window.innerWidth * 0.85 &&
@@ -95,6 +115,9 @@
         // Step back one size to ensure it fits
         text.style.fontSize = fontSize - 1 + "px";
       }
+
+      // Call emoji replacement before fitting text
+      replaceDiscordEmoji();
 
       // Fit text initially and on window resize
       fitText();
