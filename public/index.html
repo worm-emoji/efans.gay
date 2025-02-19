@@ -52,7 +52,7 @@
       let hue = 0;
       const body = document.body;
       const text = document.querySelector(".text");
-      let lastUpdateTimestamp = {{.LastUpdated}};
+      let lastUpdateTimestamp = Number("{{.LastUpdated}}");
 
       // Add function to poll for updates
       async function checkForUpdates() {
@@ -99,26 +99,13 @@
           return;
         }
 
-        let fontSize = 1;
+        let fontSize = 24;
         text.style.fontSize = fontSize + "px";
 
         // Store the HTML content with emojis
         const originalHTML = text.innerHTML;
 
-        // Add line breaks for narrow screens
-        if (window.innerWidth < 768) {
-          const words = text.textContent.split(" ");
-          if (words.length > 2) {
-            const midPoint = Math.ceil(words.length / 2);
-            text.textContent =
-              words.slice(0, midPoint).join(" ") +
-              "\n" +
-              words.slice(midPoint).join(" ");
-          }
-        } else {
-          // Remove line breaks for wider screens
-          text.textContent = text.textContent.replace(/\n/g, " ");
-        }
+        text.textContent = text.textContent.replace(/\n/g, " ");
 
         // Restore emoji images
         text.innerHTML = originalHTML;
