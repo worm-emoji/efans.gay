@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -60,17 +59,37 @@ func (s *MOTDStore) Set(message string) error {
 	return nil
 }
 
-func saveRequestToDB(db *sql.DB, body string, request json.RawMessage) error {
-	_, err := db.Exec(`
-		INSERT INTO posts (body, request, created_at)
-		VALUES ($1, $2, NOW())
-	`, body, []byte(request))
+func savePostToDB(db *sql.DB, body string, userID string, username string) (int64, error) {
+	var id int64
+	err := db.QueryRow(`
+		INSERT INTO posts (body, user_id, username, created_at)
+		VALUES ($1, $2, $3, NOW())
+		RETURNING id
+	`, body, userID, username).Scan(&id)
 
 	if err != nil {
-		return fmt.Errorf("error inserting into database: %v", err)
+		return 0, fmt.Errorf("error inserting into database: %v", err)
 	}
 
-	return nil
+	return id, nil
+}
+
+func updateMessageID(db *sql.DB, postID int64, messageID string) error {
+	_, err := db.Exec(`
+		UPDATE posts 
+		SET discord_message_id = $1
+		WHERE id = $2
+	`, messageID, postID)
+	return err
+}
+
+func getPostIDFromMessageID(db *sql.DB, messageID string) (int64, error) {
+	var postID int64
+	err := db.QueryRow(`
+		SELECT id FROM posts 
+		WHERE discord_message_id = $1
+	`, messageID).Scan(&postID)
+	return postID, err
 }
 
 func main() {
@@ -109,7 +128,7 @@ func main() {
 
 	// Initialize database connection
 	log.Printf("Connecting to database...")
-	db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	db, err := sql.Open("postgres", os.Getenv("POSTGRES_URL"))
 	if err != nil {
 		log.Fatalf("Error connecting to database: %v", err)
 	}
@@ -153,19 +172,75 @@ func main() {
 						return
 					}
 
-					// Save to database
-					if err := saveRequestToDB(db, newMessage, []byte(i.Token)); err != nil {
+					// Save to database with user info
+					postID, err := savePostToDB(
+						db,
+						newMessage,
+						i.Member.User.ID,
+						i.Member.User.Username,
+					)
+					if err != nil {
 						log.Printf("Error saving to database: %v", err)
 					}
 
-					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 						Type: discordgo.InteractionResponseChannelMessageWithSource,
 						Data: &discordgo.InteractionResponseData{
 							Content: fmt.Sprintf("Updated https://efans.gay message to: %s", newMessage),
 						},
 					})
+					if err != nil {
+						log.Printf("Error responding to interaction: %v", err)
+						return
+					}
+
+					// Get the message ID and update the database
+					msg, err := s.InteractionResponse(i.Interaction)
+					if err == nil {
+						if err := updateMessageID(db, postID, msg.ID); err != nil {
+							log.Printf("Error updating message ID: %v", err)
+						}
+					}
 				}
 			}
+		}
+	})
+
+	// Update the reaction handlers to use the database lookup
+	discord.AddHandler(func(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+		postID, err := getPostIDFromMessageID(db, r.MessageID)
+		if err != nil {
+			return // Message not found or error
+		}
+
+		// Store the reaction in the database
+		_, err = db.Exec(`
+			INSERT INTO reactions (post_id, user_id, emoji, created_at)
+			VALUES ($1, $2, $3, NOW())
+			ON CONFLICT (post_id, user_id, emoji) DO NOTHING
+		`, postID, r.UserID, r.Emoji.MessageFormat())
+
+		if err != nil {
+			log.Printf("Error storing reaction: %v", err)
+		}
+	})
+
+	discord.AddHandler(func(s *discordgo.Session, r *discordgo.MessageReactionRemove) {
+		postID, err := getPostIDFromMessageID(db, r.MessageID)
+		if err != nil {
+			return // Message not found or error
+		}
+
+		// Remove the reaction from the database
+		_, err = db.Exec(`
+			DELETE FROM reactions 
+			WHERE post_id = $1 
+			AND user_id = $2 
+			AND emoji = $3
+		`, postID, r.UserID, r.Emoji.MessageFormat())
+
+		if err != nil {
+			log.Printf("Error removing reaction: %v", err)
 		}
 	})
 
