@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	_ "github.com/lib/pq"
 
 	"github.com/joho/godotenv"
 )
@@ -47,12 +50,12 @@ func (s *MOTDStore) Set(message string) error {
 	defer s.Unlock()
 	s.message = message
 	s.lastUpdated = time.Now().Unix()
-	
+
 	// Ensure data directory exists
 	if err := os.MkdirAll("data", 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
-	
+
 	// Save to file
 	if err := os.WriteFile("data/efans.txt", []byte(message), 0644); err != nil {
 		return fmt.Errorf("failed to write MOTD to file: %v", err)
@@ -70,14 +73,14 @@ type Interaction struct {
 }
 
 type InteractionData struct {
-	Name    string                   `json:"name"`
-	Options []InteractionDataOption  `json:"options"`
+	Name    string                  `json:"name"`
+	Options []InteractionDataOption `json:"options"`
 }
 
 type InteractionDataOption struct {
-	Name    string `json:"name"`
-	Value   string `json:"value"`
-	Type    int    `json:"type"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Type  int    `json:"type"`
 }
 
 type InteractionResponse struct {
@@ -161,7 +164,7 @@ func registerDiscordCommands() error {
 func verifyDiscordRequest(r *http.Request) error {
 	signature := r.Header.Get("X-Signature-Ed25519")
 	timestamp := r.Header.Get("X-Signature-Timestamp")
-	
+
 	if signature == "" || timestamp == "" {
 		return fmt.Errorf("missing signature headers")
 	}
@@ -184,9 +187,22 @@ func verifyDiscordRequest(r *http.Request) error {
 	}
 
 	message := []byte(timestamp + string(body))
-	
+
 	if !ed25519.Verify(pubKeyBytes, message, sigBytes) {
 		return fmt.Errorf("invalid signature")
+	}
+
+	return nil
+}
+
+func saveRequestToDB(db *sql.DB, body string, request json.RawMessage) error {
+	_, err := db.Exec(`
+		INSERT INTO posts (body, request, created_at)
+		VALUES ($1, $2, NOW())
+	`, body, []byte(request))
+
+	if err != nil {
+		return fmt.Errorf("error inserting into database: %v", err)
 	}
 
 	return nil
@@ -203,12 +219,24 @@ func main() {
 		log.Printf("Warning: Failed to register Discord commands: %v", err)
 	}
 
+	// Add database connection
+	db, err := sql.Open("postgres", os.Getenv("POSTGRES_URL"))
+	if err != nil {
+		log.Fatal("Error connecting to database:", err)
+	}
+	defer db.Close()
+
+	// Test the connection
+	if err := db.Ping(); err != nil {
+		log.Fatal("Error pinging database:", err)
+	}
+
 	// Initialize MOTD store with persisted or default message
 	motdStore := &MOTDStore{
 		message:     "does citadel usually make money off these things?",
 		lastUpdated: time.Now().Unix(),
 	}
-	
+
 	// Try to load saved MOTD
 	if data, err := os.ReadFile("data/efans.txt"); err == nil {
 		motdStore.Set(string(data))
@@ -217,13 +245,23 @@ func main() {
 	// Create file server handler for static files
 	fs := http.FileServer(http.Dir("public"))
 
-	// Update Discord webhook handler with verification
+	// Update Discord webhook handler to save to database
 	http.HandleFunc("/discord-webhook", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
+		// Read the body once for verification and storage
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("Error reading body: %v", err)
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		// Store raw JSON for later use
+		rawBody := json.RawMessage(body)
+		r.Body = io.NopCloser(bytes.NewBuffer(body)) // Replace the body for later use
 		// Verify the request is from Discord
 		if err := verifyDiscordRequest(r); err != nil {
 			log.Printf("Discord verification failed: %v", err)
@@ -232,7 +270,7 @@ func main() {
 		}
 
 		var interaction Interaction
-		if err := json.NewDecoder(r.Body).Decode(&interaction); err != nil {
+		if err := json.NewDecoder(bytes.NewBuffer(body)).Decode(&interaction); err != nil {
 			log.Printf("Error decoding interaction: %v", err)
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
@@ -260,11 +298,17 @@ func main() {
 		// Handle the set command
 		if interaction.Type == 2 && interaction.Data.Name == "gay" && len(interaction.Data.Options) > 0 {
 			newMessage := interaction.Data.Options[0].Value
-			
+
 			if err := motdStore.Set(newMessage); err != nil {
 				log.Printf("Error saving MOTD: %v", err)
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
+			}
+
+			// Save to database
+			if err := saveRequestToDB(db, newMessage, rawBody); err != nil {
+				log.Printf("Error saving to database: %v", err)
+				// Continue processing even if database save fails
 			}
 
 			// Respond to Discord
@@ -274,7 +318,7 @@ func main() {
 					Content: fmt.Sprintf("Updated https://efans.gay message to: %s", newMessage),
 				},
 			}
-			
+
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			return
@@ -294,7 +338,7 @@ func main() {
 			}
 
 			data := PageData{
-				MOTD: motdStore.Get(),
+				MOTD:        motdStore.Get(),
 				LastUpdated: motdStore.GetLastUpdated(),
 			}
 
@@ -319,4 +363,4 @@ func main() {
 	if err := http.ListenAndServe("127.0.0.1:4331", nil); err != nil {
 		log.Fatal(err)
 	}
-} 
+}
