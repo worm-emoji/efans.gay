@@ -9,13 +9,3 @@ CREATE TABLE "posts" (
     "x_post_id" text,
     PRIMARY KEY ("id")
 ); 
-
-CREATE TABLE IF NOT EXISTS reactions (
-    post_id INTEGER REFERENCES posts(id),
-    user_id TEXT NOT NULL,
-    emoji TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (post_id, user_id, emoji)
-);
-
-CREATE INDEX idx_discord_message_id ON posts(discord_message_id);

@@ -129,6 +129,16 @@ func postToX(s *discordgo.Session, db *sql.DB, postID int64, message string, xCl
 		return fmt.Errorf("error getting post details: %v", err)
 	}
 
+	// Update the x_post_id in the database
+	_, err = db.Exec(`
+		UPDATE posts 
+		SET x_post_id = $1 
+		WHERE id = $2
+	`, tweetID, postID)
+	if err != nil {
+		log.Printf("Error updating x_post_id: %v", err)
+	}
+
 	// Add checkmark reaction
 	err = s.MessageReactionAdd(channelID, messageID, "✅")
 	if err != nil {
@@ -170,34 +180,23 @@ func checkAndUpdateXPostStatus(db *sql.DB, s *discordgo.Session, postID int64, x
 	log.Printf("Current reaction count for post %d: %d", postID, count)
 
 	if count >= minReactCount {
-		// Check if this post was already marked for X posting
-		var shouldPostToX bool
+		// Check if this post was already posted to X
+		var xPostID sql.NullString
 		var body string
 		err := db.QueryRow(`
-			SELECT post_to_x, body 
+			SELECT x_post_id, body 
 			FROM posts 
 			WHERE id = $1
-		`, postID).Scan(&shouldPostToX, &body)
+		`, postID).Scan(&xPostID, &body)
 
 		if err != nil {
 			return fmt.Errorf("error checking post status: %v", err)
 		}
 
-		if !shouldPostToX {
-			// Post to X with new signature
+		if !xPostID.Valid {
+			// Post to X
 			if err := postToX(s, db, postID, body, xClient); err != nil {
 				return fmt.Errorf("error posting to X: %v", err)
-			}
-
-			// Update the post_to_x status
-			_, err = db.Exec(`
-				UPDATE posts 
-				SET post_to_x = true 
-				WHERE id = $1
-			`, postID)
-
-			if err != nil {
-				return fmt.Errorf("error updating post_to_x status: %v", err)
 			}
 
 			log.Printf("Post %d successfully posted to X after receiving %d reactions", postID, count)
