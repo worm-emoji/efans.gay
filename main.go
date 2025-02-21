@@ -135,9 +135,15 @@ func postToX(s *discordgo.Session, db *sql.DB, postID int64, message string, xCl
 		log.Printf("Error adding checkmark reaction: %v", err)
 	}
 
-	// Post the X link in the original channel
+	// Post the X link in the original channel as a reply
 	tweetURL := fmt.Sprintf("https://x.com/efans_gay/status/%s", tweetID)
-	_, err = s.ChannelMessageSend(channelID, tweetURL)
+	_, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content: tweetURL,
+		Reference: &discordgo.MessageReference{
+			MessageID: messageID,
+			ChannelID: channelID,
+		},
+	})
 	if err != nil {
 		log.Printf("Error sending X link message: %v", err)
 	}
