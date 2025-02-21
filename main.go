@@ -1,14 +1,10 @@
 package main
 
 import (
-	"bytes"
-	"crypto/ed25519"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +14,7 @@ import (
 
 	_ "github.com/lib/pq"
 
+	"github.com/bwmarrin/discordgo"
 	"github.com/joho/godotenv"
 )
 
@@ -63,138 +60,6 @@ func (s *MOTDStore) Set(message string) error {
 	return nil
 }
 
-// Discord interaction types
-type Interaction struct {
-	Type          int             `json:"type"`
-	Data          InteractionData `json:"data"`
-	Token         string          `json:"token"`
-	ApplicationID string          `json:"application_id"`
-	GuildID       string          `json:"guild_id"`
-}
-
-type InteractionData struct {
-	Name    string                  `json:"name"`
-	Options []InteractionDataOption `json:"options"`
-}
-
-type InteractionDataOption struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-	Type  int    `json:"type"`
-}
-
-type InteractionResponse struct {
-	Type int                     `json:"type"`
-	Data InteractionResponseData `json:"data"`
-}
-
-type InteractionResponseData struct {
-	Content string `json:"content"`
-}
-
-// Discord command registration
-type Command struct {
-	Name        string          `json:"name"`
-	Type        int             `json:"type"`
-	Description string          `json:"description"`
-	Options     []CommandOption `json:"options"`
-}
-
-type CommandOption struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Type        int    `json:"type"`
-	Required    bool   `json:"required"`
-}
-
-func registerDiscordCommands() error {
-	command := Command{
-		Name:        "gay",
-		Type:        1,
-		Description: "Changes the content of efans.gay",
-		Options: []CommandOption{
-			{
-				Name:        "message",
-				Description: "The new message to display",
-				Type:        3, // STRING type
-				Required:    true,
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(command)
-	if err != nil {
-		return fmt.Errorf("error marshaling command: %v", err)
-	}
-
-	url := fmt.Sprintf("https://discord.com/api/v8/applications/%s/guilds/%s/commands",
-		os.Getenv("DISCORD_APPLICATION_ID"),
-		os.Getenv("DISCORD_GUILD_ID"))
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Set("Authorization", "Bot "+os.Getenv("DISCORD_BOT_TOKEN"))
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("error sending request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var prettyJSON bytes.Buffer
-	if err := json.Indent(&prettyJSON, body, "", "  "); err != nil {
-		log.Printf("Discord API response: status %d: %s", resp.StatusCode, string(body))
-	} else {
-		log.Printf("Discord API response: status %d:\n%s", resp.StatusCode, prettyJSON.String())
-	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("error registering command: status %d", resp.StatusCode)
-	}
-
-	return nil
-}
-
-func verifyDiscordRequest(r *http.Request) error {
-	signature := r.Header.Get("X-Signature-Ed25519")
-	timestamp := r.Header.Get("X-Signature-Timestamp")
-
-	if signature == "" || timestamp == "" {
-		return fmt.Errorf("missing signature headers")
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return fmt.Errorf("error reading body: %v", err)
-	}
-	// Replace the body for later use
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
-
-	pubKeyBytes, err := hex.DecodeString(os.Getenv("DISCORD_PUBLIC_KEY"))
-	if err != nil {
-		return fmt.Errorf("error decoding public key: %v", err)
-	}
-
-	sigBytes, err := hex.DecodeString(signature)
-	if err != nil {
-		return fmt.Errorf("error decoding signature: %v", err)
-	}
-
-	message := []byte(timestamp + string(body))
-
-	if !ed25519.Verify(pubKeyBytes, message, sigBytes) {
-		return fmt.Errorf("invalid signature")
-	}
-
-	return nil
-}
-
 func saveRequestToDB(db *sql.DB, body string, request json.RawMessage) error {
 	_, err := db.Exec(`
 		INSERT INTO posts (body, request, created_at)
@@ -209,123 +74,134 @@ func saveRequestToDB(db *sql.DB, body string, request json.RawMessage) error {
 }
 
 func main() {
-	// Load environment variables
 	if err := godotenv.Load(); err != nil {
-		log.Fatal("Error loading .env file")
+		log.Printf("Error loading .env file: %v", err)
 	}
 
-	// Register Discord commands
-	if err := registerDiscordCommands(); err != nil {
-		log.Printf("Warning: Failed to register Discord commands: %v", err)
-	}
-
-	// Add database connection
-	db, err := sql.Open("postgres", os.Getenv("POSTGRES_URL"))
+	log.Printf("Initializing Discord bot with application ID: %s", os.Getenv("DISCORD_APPLICATION_ID"))
+	
+	// Initialize Discord bot
+	discord, err := discordgo.New("Bot " + os.Getenv("DISCORD_BOT_TOKEN"))
 	if err != nil {
-		log.Fatal("Error connecting to database:", err)
+		log.Fatalf("Error creating Discord session: %v", err)
+	}
+
+	// Add connection state change logging
+	discord.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		log.Printf("Discord bot is ready! Logged in as: %s#%s", s.State.User.Username, s.State.User.Discriminator)
+		log.Printf("Bot is present in %d guilds", len(s.State.Guilds))
+		for _, guild := range s.State.Guilds {
+			log.Printf("Connected to guild: %s (ID: %s)", guild.Name, guild.ID)
+		}
+	})
+
+	discord.AddHandler(func(s *discordgo.Session, c *discordgo.Connect) {
+		log.Printf("Discord connection established to gateway")
+	})
+
+	discord.AddHandler(func(s *discordgo.Session, d *discordgo.Disconnect) {
+		log.Printf("Discord connection lost, attempting to reconnect...")
+	})
+
+	discord.AddHandler(func(s *discordgo.Session, r *discordgo.Resumed) {
+		log.Printf("Discord connection resumed")
+	})
+
+	// Initialize database connection
+	log.Printf("Connecting to database...")
+	db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatalf("Error connecting to database: %v", err)
 	}
 	defer db.Close()
+	log.Printf("Database connection established")
 
-	// Test the connection
-	if err := db.Ping(); err != nil {
-		log.Fatal("Error pinging database:", err)
-	}
-
-	// Initialize MOTD store with persisted or default message
-	motdStore := &MOTDStore{
-		message:     "does citadel usually make money off these things?",
-		lastUpdated: time.Now().Unix(),
-	}
-
-	// Try to load saved MOTD
+	// Initialize MOTD store
+	motdStore := &MOTDStore{}
+	
+	// Load initial MOTD from file
 	if data, err := os.ReadFile("data/efans.txt"); err == nil {
 		motdStore.Set(string(data))
 	}
 
-	// Create file server handler for static files
+	// Create static file server
 	fs := http.FileServer(http.Dir("public"))
 
-	// Update Discord webhook handler to save to database
-	http.HandleFunc("/discord-webhook", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	// Set up Discord bot handlers
+	discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		// Check if interaction is from the allowed guild
+		allowedGuildID := os.Getenv("DISCORD_GUILD_ID")
+		if i.GuildID != allowedGuildID {
+			log.Printf("Ignoring interaction from unauthorized guild: %s", i.GuildID)
 			return
 		}
 
-		// Read the body once for verification and storage
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("Error reading body: %v", err)
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-		// Store raw JSON for later use
-		rawBody := json.RawMessage(body)
-		r.Body = io.NopCloser(bytes.NewBuffer(body)) // Replace the body for later use
-		// Verify the request is from Discord
-		if err := verifyDiscordRequest(r); err != nil {
-			log.Printf("Discord verification failed: %v", err)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		var interaction Interaction
-		if err := json.NewDecoder(bytes.NewBuffer(body)).Decode(&interaction); err != nil {
-			log.Printf("Error decoding interaction: %v", err)
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-
-		// Verify guild ID
-		if interaction.GuildID != os.Getenv("DISCORD_GUILD_ID") {
-			log.Printf("Unauthorized guild ID: %s", interaction.GuildID)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		// Log the interaction for debugging
-		log.Printf("Received interaction type: %d", interaction.Type)
-
-		// Handle PING interaction type (type 1)
-		if interaction.Type == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(InteractionResponse{
-				Type: 1, // PONG
+		switch i.Type {
+		case discordgo.InteractionPing:
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponsePong,
 			})
-			return
+
+		case discordgo.InteractionApplicationCommand:
+			if i.ApplicationCommandData().Name == "gay" {
+				options := i.ApplicationCommandData().Options
+				if len(options) > 0 {
+					newMessage := options[0].StringValue()
+
+					if err := motdStore.Set(newMessage); err != nil {
+						log.Printf("Error saving MOTD: %v", err)
+						return
+					}
+
+					// Save to database
+					if err := saveRequestToDB(db, newMessage, []byte(i.Token)); err != nil {
+						log.Printf("Error saving to database: %v", err)
+					}
+
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: fmt.Sprintf("Updated https://efans.gay message to: %s", newMessage),
+						},
+					})
+				}
+			}
 		}
-
-		// Handle the set command
-		if interaction.Type == 2 && interaction.Data.Name == "gay" && len(interaction.Data.Options) > 0 {
-			newMessage := interaction.Data.Options[0].Value
-
-			if err := motdStore.Set(newMessage); err != nil {
-				log.Printf("Error saving MOTD: %v", err)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			// Save to database
-			if err := saveRequestToDB(db, newMessage, rawBody); err != nil {
-				log.Printf("Error saving to database: %v", err)
-				// Continue processing even if database save fails
-			}
-
-			// Respond to Discord
-			response := InteractionResponse{
-				Type: 4, // CHANNEL_MESSAGE_WITH_SOURCE
-				Data: InteractionResponseData{
-					Content: fmt.Sprintf("Updated https://efans.gay message to: %s", newMessage),
-				},
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(response)
-			return
-		}
-
-		http.Error(w, "Unknown command", http.StatusBadRequest)
 	})
+
+	// Register the slash command
+	command := &discordgo.ApplicationCommand{
+		Name:        "gay",
+		Description: "Update the message on efans.gay",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "message",
+				Description: "The new message to display",
+				Required:    true,
+			},
+		},
+	}
+
+	// Open Discord connection
+	log.Printf("Opening Discord connection...")
+	if err := discord.Open(); err != nil {
+		log.Fatalf("Error opening Discord connection: %v", err)
+	}
+	defer discord.Close()
+
+	// Register the command with Discord
+	log.Printf("Registering slash command 'gay' for guild ID: %s", os.Getenv("DISCORD_GUILD_ID"))
+	_, err = discord.ApplicationCommandCreate(
+		discord.State.User.ID,
+		os.Getenv("DISCORD_GUILD_ID"),
+		command,
+	)
+	if err != nil {
+		log.Printf("Error creating slash command: %v", err)
+	} else {
+		log.Printf("Slash command 'gay' registered successfully")
+	}
 
 	// Regular web handlers
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
