@@ -3,8 +3,10 @@ CREATE TABLE "posts" (
     "body" text NOT NULL,
     "created_at" timestamptz NOT NULL DEFAULT now(),
     "discord_message_id" text UNIQUE,
+    "discord_channel_id" text NOT NULL,
     "user_id" text NOT NULL,
     "username" text NOT NULL,
+    "post_to_x" boolean NOT NULL DEFAULT false,
     PRIMARY KEY ("id")
 );
 

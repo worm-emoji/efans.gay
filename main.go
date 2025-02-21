@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"html/template"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/joho/godotenv"
+	"github.com/michimani/gotwi"
+	"github.com/michimani/gotwi/tweet/managetweet"
+	"github.com/michimani/gotwi/tweet/managetweet/types"
 )
 
 type PageData struct {
@@ -59,13 +63,13 @@ func (s *MOTDStore) Set(message string) error {
 	return nil
 }
 
-func savePostToDB(db *sql.DB, body string, userID string, username string) (int64, error) {
+func savePostToDB(db *sql.DB, body string, userID string, username string, channelID string) (int64, error) {
 	var id int64
 	err := db.QueryRow(`
-		INSERT INTO posts (body, user_id, username, created_at)
-		VALUES ($1, $2, $3, NOW())
+		INSERT INTO posts (body, user_id, username, discord_channel_id, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
 		RETURNING id
-	`, body, userID, username).Scan(&id)
+	`, body, userID, username, channelID).Scan(&id)
 
 	if err != nil {
 		return 0, fmt.Errorf("error inserting into database: %v", err)
@@ -92,13 +96,118 @@ func getPostIDFromMessageID(db *sql.DB, messageID string) (int64, error) {
 	return postID, err
 }
 
+// Add these constants near the top of the file, after imports
+const (
+	reactionEmoji = "vapenogglespeepo:1067146118082867312"
+	minReactCount = 3
+)
+
+var formattedEmoji = fmt.Sprintf("<:%s>", reactionEmoji)
+
+// Replace the postToX function with this new version
+func postToX(s *discordgo.Session, db *sql.DB, postID int64, message string, xClient *gotwi.Client) error {
+	// Create tweet
+	input := &types.CreateInput{
+		Text: gotwi.String(message),
+	}
+
+	tweet, err := managetweet.Create(context.Background(), xClient, input)
+	if err != nil {
+		return fmt.Errorf("error posting to X: %v", err)
+	}
+
+	tweetID := gotwi.StringValue(tweet.Data.ID)
+
+	// Get the channel ID and message ID for this post
+	var channelID, messageID string
+	err = db.QueryRow(`
+		SELECT discord_channel_id, discord_message_id 
+		FROM posts 
+		WHERE id = $1
+	`, postID).Scan(&channelID, &messageID)
+	if err != nil {
+		return fmt.Errorf("error getting post details: %v", err)
+	}
+
+	// Add checkmark reaction
+	err = s.MessageReactionAdd(channelID, messageID, "✅")
+	if err != nil {
+		log.Printf("Error adding checkmark reaction: %v", err)
+	}
+
+	// Post the X link in the original channel
+	tweetURL := fmt.Sprintf("https://x.com/efans_gay/status/%s", tweetID)
+	_, err = s.ChannelMessageSend(channelID, tweetURL)
+	if err != nil {
+		log.Printf("Error sending X link message: %v", err)
+	}
+
+	log.Printf("Posted to X: %s", tweetID)
+	return nil
+}
+
+// Modify the checkAndUpdateXPostStatus function
+func checkAndUpdateXPostStatus(db *sql.DB, s *discordgo.Session, postID int64, xClient *gotwi.Client) error {
+	var count int
+	err := db.QueryRow(`
+		SELECT COUNT(DISTINCT user_id) 
+		FROM reactions 
+		WHERE post_id = $1 
+		AND emoji = $2
+		AND user_id != $3  -- Exclude the bot's reactions
+	`, postID, formattedEmoji, s.State.User.ID).Scan(&count)
+
+	if err != nil {
+		return fmt.Errorf("error counting reactions: %v", err)
+	}
+
+	log.Printf("Current reaction count for post %d: %d", postID, count)
+
+	if count >= minReactCount {
+		// Check if this post was already marked for X posting
+		var shouldPostToX bool
+		var body string
+		err := db.QueryRow(`
+			SELECT post_to_x, body 
+			FROM posts 
+			WHERE id = $1
+		`, postID).Scan(&shouldPostToX, &body)
+
+		if err != nil {
+			return fmt.Errorf("error checking post status: %v", err)
+		}
+
+		if !shouldPostToX {
+			// Post to X with new signature
+			if err := postToX(s, db, postID, body, xClient); err != nil {
+				return fmt.Errorf("error posting to X: %v", err)
+			}
+
+			// Update the post_to_x status
+			_, err = db.Exec(`
+				UPDATE posts 
+				SET post_to_x = true 
+				WHERE id = $1
+			`, postID)
+
+			if err != nil {
+				return fmt.Errorf("error updating post_to_x status: %v", err)
+			}
+
+			log.Printf("Post %d successfully posted to X after receiving %d reactions", postID, count)
+		}
+	}
+
+	return nil
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Error loading .env file: %v", err)
 	}
 
 	log.Printf("Initializing Discord bot with application ID: %s", os.Getenv("DISCORD_APPLICATION_ID"))
-	
+
 	// Initialize Discord bot
 	discord, err := discordgo.New("Bot " + os.Getenv("DISCORD_BOT_TOKEN"))
 	if err != nil {
@@ -137,7 +246,7 @@ func main() {
 
 	// Initialize MOTD store
 	motdStore := &MOTDStore{}
-	
+
 	// Load initial MOTD from file
 	if data, err := os.ReadFile("data/efans.txt"); err == nil {
 		motdStore.Set(string(data))
@@ -145,6 +254,20 @@ func main() {
 
 	// Create static file server
 	fs := http.FileServer(http.Dir("public"))
+
+	// Initialize X client
+	xClient, err := gotwi.NewClient(&gotwi.NewClientInput{
+		AuthenticationMethod: gotwi.AuthenMethodOAuth1UserContext,
+		OAuthToken:           os.Getenv("X_ACCESS_TOKEN"),
+		OAuthTokenSecret:     os.Getenv("X_ACCESS_TOKEN_SECRET"),
+		APIKey:               os.Getenv("X_API_KEY"),
+		APIKeySecret:         os.Getenv("X_API_KEY_SECRET"),
+	})
+	if err != nil {
+		log.Printf("Error creating X client: %v", err)
+	} else {
+		log.Printf("X client initialized successfully")
+	}
 
 	// Set up Discord bot handlers
 	discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -172,12 +295,26 @@ func main() {
 						return
 					}
 
-					// Save to database with user info
+					// Get user info safely
+					var userID, username string
+					if i.Member != nil && i.Member.User != nil {
+						userID = i.Member.User.ID
+						username = i.Member.User.Username
+					} else if i.User != nil {
+						userID = i.User.ID
+						username = i.User.Username
+					} else {
+						log.Printf("Could not get user info from interaction")
+						return
+					}
+
+					// Save to database with channel ID
 					postID, err := savePostToDB(
 						db,
 						newMessage,
-						i.Member.User.ID,
-						i.Member.User.Username,
+						userID,
+						username,
+						i.ChannelID,
 					)
 					if err != nil {
 						log.Printf("Error saving to database: %v", err)
@@ -186,7 +323,11 @@ func main() {
 					err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 						Type: discordgo.InteractionResponseChannelMessageWithSource,
 						Data: &discordgo.InteractionResponseData{
-							Content: fmt.Sprintf("Updated https://efans.gay message to: %s", newMessage),
+							Content: fmt.Sprintf("Updated https://efans.gay message to: %s\n\n-# (Will post to X after %d %s reacts)",
+								newMessage,
+								minReactCount+1,
+								formattedEmoji,
+							),
 						},
 					})
 					if err != nil {
@@ -199,6 +340,12 @@ func main() {
 					if err == nil {
 						if err := updateMessageID(db, postID, msg.ID); err != nil {
 							log.Printf("Error updating message ID: %v", err)
+						}
+
+						// Add the reaction to the message
+						err = s.MessageReactionAdd(msg.ChannelID, msg.ID, reactionEmoji)
+						if err != nil {
+							log.Printf("Error adding reaction: %v", err)
 						}
 					}
 				}
@@ -222,6 +369,14 @@ func main() {
 
 		if err != nil {
 			log.Printf("Error storing reaction: %v", err)
+			return
+		}
+
+		// Only check for X posting if it's the target emoji
+		if r.Emoji.MessageFormat() == formattedEmoji {
+			if err := checkAndUpdateXPostStatus(db, s, postID, xClient); err != nil {
+				log.Printf("Error checking X post status: %v", err)
+			}
 		}
 	})
 
